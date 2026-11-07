@@ -148,7 +148,8 @@ showing nothing.
 
 `~/.config/pleamar/shells/panel-view` is the pill on the bottom bar: **AI / CAL /
 GIF / NEXT / AUTO**, with a dot for the state - leaf cycling, accent a held
-screen, sand a held animation, which is the one state where NEXT means something.
+screen, sand a held animation. NEXT is the cycling button: with an animation held
+it walks the sixteen, otherwise it walks the screens.
 It is a thin client on purpose: every press calls that same command, and the
 read-back of its `--json` every 5 s is all the pill shows, so the command's
 validation and its atomic write stay the only authority. That is the rule the
