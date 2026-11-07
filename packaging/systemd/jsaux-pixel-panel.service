@@ -1,0 +1,18 @@
+[Unit]
+Description=JSAUX PIXEL faceplate - AI Agent screen over USB
+# The panel is on this box for now, so this box is the one pushing frames to it.
+# When the panel moves to the Steam Machine, disable this unit; the Decky plugin
+# in direct mode becomes the pusher and only the bridge is needed here.
+After=network-online.target sound.target
+Wants=jsaux-pixel-bridge.service
+
+[Service]
+Type=simple
+# Serial access needs the dialout group, which a plain login shell may not carry.
+ExecStart=/usr/bin/sg dialout -c "/home/brent/Projects/JSAUX-PIXEL/.venv/bin/python -u /home/brent/Projects/JSAUX-PIXEL/tools/ai_agent_screen.py --push --live --interval 1"
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=default.target

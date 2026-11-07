@@ -1,0 +1,16 @@
+[Unit]
+Description=JSAUX PIXEL stats bridge (serves the faceplate host over the LAN)
+# The agent host holds the Strata key and the opencode database; the bridge is
+# the only thing the faceplate host talks to. The shared secret is read from
+# ~/.config/opencode/jsaux-stats-token by the server itself.
+After=network-online.target
+WantedBy=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/brent/Projects/JSAUX-PIXEL/tools/agent_stats_server.py --host 0.0.0.0 --port 39060
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -126,6 +126,28 @@ A read without the secret gets `401`, and the bridge never serves the key or
 message text — counters, model name and phase only. If the bridge is down, the
 faceplate falls back to the gateway and the local database.
 
+### Keeping it running
+
+Two user services, copies of which live in `packaging/systemd/`:
+
+```bash
+cp packaging/systemd/*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now jsaux-pixel-bridge   # serves the snapshot
+systemctl --user enable --now jsaux-pixel-panel    # draws the screen over USB
+journalctl --user -f -u jsaux-pixel-panel          # watch what it pushes
+```
+
+`jsaux-pixel-panel` is only for while the faceplate is plugged into the machine
+you run the agent on: it runs `tools/ai_agent_screen.py --push --live`, and the
+port lock means a hand-run can never end up driving the panel beside it. When
+the faceplate moves to the Steam Machine, turn it off here — the Decky plugin in
+direct mode becomes the pusher and only the bridge stays:
+
+```bash
+systemctl --user disable --now jsaux-pixel-panel
+```
+
 ## Frontend note
 
 `decky-plugin/dist/index.js` is the checked-in Decky UI bundle. Matching TSX sources
