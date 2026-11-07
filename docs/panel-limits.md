@@ -24,6 +24,18 @@ sg dialout -c '.venv/bin/python -u tools/panel_probe.py all --report limits.json
 | screen swap | **0.527 s** median for a ~3 KB frame | a rotation of screens wants at least ~1.1 s each |
 | data change to panel | **0.464 s** | live numbers reach the panel in under half a second |
 
+## Behaviour the design assumes, now tested
+
+| assumption | result |
+|---|---|
+| the panel keeps looping the last upload | **yes** - filmed still turning at 2, 22, 62 and **122 s** after a single upload. No keep-alive uploads needed, which is what lets a quiet screen cost one upload |
+| a smaller GIF canvas patches its corner | **no** - a 16x16 upload cleared the rest of the screen (a lit far side went 65,021 -> 5,804). Every upload replaces the whole display, so there is no cheap partial-screen update: a notification costs a full frame plus its own changes |
+| the panel sleeps quickly | it did not - after **120 s** untouched it still answered a power frame, and the loop test could still see it lit at 122 s |
+| built-in firmware animations are available | **no** - ids 0, 1, 2, 3, 5, 8, 16 and 20 all answered `0x00` (rejected). An attract mode has to be uploaded like everything else |
+| `set_brightness` works | **it gets no reply at all** on this tip. Don't put it in a frame sequence: an unanswered command costs the retry ladder (seconds), not the milliseconds it looks like. `matrix_api.push_payload` still lists a brightness frame - treat that as decoration, not something to send |
+
+One caveat about the loop measurements: over a short film the period can read as a *multiple* of the real turn (the loop test's films read 1.8 s for a 0.64 s turn). Use "is it still moving" from a short film and "how fast" only from the framerate test, which films long enough.
+
 ## What a frame costs, by how much of it moves
 
 `gif_encoder` patches frames after the first, so this is the real cost curve:

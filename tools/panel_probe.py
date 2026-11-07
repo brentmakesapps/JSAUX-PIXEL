@@ -47,7 +47,10 @@ import panel_cam  # noqa: E402
 from backend import ai_agent_screen as screen  # noqa: E402
 from backend import gif_encoder  # noqa: E402
 from backend import local_ai_stats  # noqa: E402
-from protocols.usb.dy_frame import GIF_CHUNK_DATA_SIZE as GIF_CHUNK_DEFAULT  # noqa: E402
+from protocols.usb.dy_frame import (  # noqa: E402
+    GIF_CHUNK_DATA_SIZE as GIF_CHUNK_DEFAULT,
+    build_builtin_animation,
+)
 from protocols.usb.transport import TransportError, UsbSerialTransport  # noqa: E402
 
 PORT = "/dev/ttyUSB0"
@@ -58,7 +61,8 @@ PANEL_SERVICE = "jsaux-pixel-panel"
 MARKER = Path("/tmp/jsaux-pixel-probe.marker")
 SAMPLES = 5
 TEST_ORDER = ["chunks", "dedupe", "ceiling", "frames", "framerate", "cost",
-              "rotation", "latency", "sleep"]
+              "rotation", "latency", "sleep", "canvas", "loop", "brightness",
+              "animation"]
 W, H = screen.MATRIX_WIDTH, screen.MATRIX_HEIGHT
 PIXELS = W * H
 # Fixtures build index lists straight into their own palette, because the byte
@@ -547,13 +551,129 @@ class Probe:
         self.results["sleep"] = {"rows": rows,
                                  "answered_for_s": rows[-1]["t"] if rows else 0}
 
+    # ---------- what the design assumes, tested --------------------------
+    def cell_mean(self, led: str) -> float:
+        """Average brightness of an LED rectangle, as the camera sees it."""
+        frame = panel_cam.grab(panel_cam.DEVICE, Path("/tmp/opencode-probe-grab.png"),
+                                "", 1.0, "", 0.0, panel_cam.WARMUP)
+        rect = panel_cam.led_cell(led) or "0,0,8,8"
+        x, y, width, height = (int(part) for part in rect.split(","))
+        out = subprocess.run(["magick", str(frame), "-crop", f"{width}x{height}+{x}+{y}",
+                              "+repage", "-colorspace", "Gray", "-format", "%[mean]",
+                              "info:"], check=True, capture_output=True, text=True)
+        try:
+            return float(out.stdout.strip().rstrip("%"))
+        except ValueError:
+            return 0.0
+
+    def test_canvas(self) -> None:
+        """Does a GIF with a smaller canvas replace the screen or only its corner?
+
+        The renderer draws the whole 64x54 every time. If a small canvas
+        composited instead, a notification could be a 16x16 patch - a tenth of
+        the bytes - with the stats left where they are.
+        """
+        field = encode([blank(1)], 20)          # whole screen lit
+        if self.timed_upload(field) is None:
+            self.results["canvas"] = {"error": self.last_error}
+            return
+        time.sleep(0.5)
+        before = self.cell_mean("24,24,8,8")
+        small = gif_encoder.encode(16, 16, PALETTE, [blank(0)], delay_cs=100)
+        accepted = self.timed_upload(small) is not None
+        time.sleep(0.5)
+        after = self.cell_mean("24,24,8,8")
+        corner = self.cell_mean("1,1,8,8")
+        verdict = "unknown"
+        if accepted:
+            if after > before * 0.5:
+                verdict = "composites: the rest of the screen survived"
+            elif after <= before * 0.2:
+                verdict = "clears: a small canvas replaces everything"
+        self.results["canvas"] = {"accepted": accepted, "lit_before": round(before, 1),
+                                   "after_small_upload": round(after, 1),
+                                   "small_canvas_area": round(corner, 1),
+                                   "verdict": verdict}
+        self.log(f"  small canvas accepted: {accepted}; far side {before:.0f} -> "
+                 f"{after:.0f}; its own corner {corner:.0f} -> {verdict}")
+
+    def test_loop(self) -> None:
+        """Does the panel keep looping the upload, or stop after a while?
+
+        Every animation here assumes the loop is effectively endless; if the tip
+        stopped, a screen at rest would freeze with the mark parked.
+        """
+        blob = walk_gif(16, delay_cs=4)
+        if self.timed_upload(blob) is None:
+            self.results["loop"] = {"error": self.last_error}
+            return
+        rows = []
+        waited = 0.0
+        for step in (2.0, 20.0, 40.0, 60.0):
+            if self.expired():
+                break
+            time.sleep(step)
+            waited += step
+            report = self.watch(2.0, turn_s=16 * 0.04)
+            rows.append({"at_s": round(waited, 1),
+                         "period_s": report.get("period_s"),
+                         "still_moving": bool(report.get("period_s"))})
+            self.log(f"  at {waited:5.1f}s: "
+                     f"{'still turning' if report.get('period_s') else 'STOPPED'}")
+        self.results["loop"] = {"rows": rows,
+                                 "still_looping_at_s": rows[-1]["at_s"] if rows else 0}
+
+    def test_brightness(self) -> None:
+        """Does the brightness setting survive a power cycle?"""
+        field = encode([blank(1)], 20)
+        if self.timed_upload(field) is None:
+            self.results["brightness"] = {"error": self.last_error}
+            return
+        rows = []
+        for level in (10, 100):
+            try:
+                self.bus.set_brightness(level)
+                time.sleep(0.8)
+                rows.append({"level": level, "mean": round(self.cell_mean("24,24,8,8"), 1)})
+            except TransportError as exc:
+                rows.append({"level": level, "error": str(exc)})
+                self.log(f"  brightness {level}: no answer ({exc})")
+        if any("error" in row for row in rows):
+            self.results["brightness"] = {"rows": rows, "supported": False}
+            return
+        self.results["brightness"] = {"rows": rows, "supported": True}
+
+    def test_animation(self) -> None:
+        """Does the built-in animation command do anything on this tip?
+
+        It costs one frame of wire time, so an attract mode built on it would be
+        free compared with uploading - if the tip answers it at all.
+        """
+        rows = []
+        for animation_id in (0, 1, 2, 3, 5, 8, 16, 20):
+            try:
+                reply = self.bus.exchange(build_builtin_animation(animation_id))
+                status = bytes(reply.payload[:1]).hex() if reply.payload else "?"
+                rows.append({"id": animation_id, "status": status})
+                self.log(f"  animation {animation_id:2d} -> 0x{status}")
+            except TransportError as exc:
+                rows.append({"id": animation_id, "error": str(exc)})
+                self.log(f"  animation {animation_id:2d} -> no answer")
+            time.sleep(0.4)
+        self.results["animation"] = {
+            "rows": rows,
+            "answered": [row["id"] for row in rows if "status" in row]}
+
     # ---------- runner ---------------------------------------------------
     def run(self, wanted: list) -> int:
         tests = {"chunks": self.test_chunks, "dedupe": self.test_dedupe,
                   "ceiling": self.test_ceiling,
                   "frames": self.test_frames, "framerate": self.test_framerate,
                   "cost": self.test_cost, "rotation": self.test_rotation,
-                  "latency": self.test_latency, "sleep": self.test_sleep}
+                  "latency": self.test_latency, "sleep": self.test_sleep,
+                  "canvas": self.test_canvas, "loop": self.test_loop,
+                  "brightness": self.test_brightness,
+                  "animation": self.test_animation}
         try:
             self.test_preflight()
             hardware = [name for name in wanted if name != "cost"]
