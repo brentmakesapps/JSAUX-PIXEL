@@ -1,5 +1,5 @@
 [Unit]
-Description=JSAUX PIXEL faceplate - AI Agent screen over USB
+Description=JSAUX PIXEL faceplate - content scheduler over USB
 # The panel is on this box for now, so this box is the one pushing frames to it.
 # When the panel moves to the Steam Machine, disable this unit; the Decky plugin
 # in direct mode becomes the pusher and only the bridge is needed here.
@@ -9,7 +9,11 @@ Wants=jsaux-pixel-bridge.service
 [Service]
 Type=simple
 # Serial access needs the dialout group, which a plain login shell may not carry.
-ExecStart=/usr/bin/sg dialout -c "/home/brent/Projects/JSAUX-PIXEL/.venv/bin/python -u /home/brent/Projects/JSAUX-PIXEL/tools/ai_agent_screen.py --push --live --interval 1"
+# panel_screen.py is the only writer of the port: it runs the bus (AI Agent,
+# notifications, calendar, prepared animations) and holds the port lock.
+Environment=JSAUX_PIXEL_CALENDAR_DIR=%h/.config/jsaux-pixel
+Environment=JSAUX_PIXEL_GIF_DIR=%h/.local/share/jsaux-pixel/gif
+ExecStart=/usr/bin/sg dialout -c "/home/brent/Projects/JSAUX-PIXEL/.venv/bin/python -u /home/brent/Projects/JSAUX-PIXEL/tools/panel_screen.py"
 Restart=always
 RestartSec=5
 Nice=5

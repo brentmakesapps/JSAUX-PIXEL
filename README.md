@@ -139,14 +139,42 @@ journalctl --user -f -u jsaux-pixel-panel          # watch what it pushes
 ```
 
 `jsaux-pixel-panel` is only for while the faceplate is plugged into the machine
-you run the agent on: it runs `tools/ai_agent_screen.py --push --live`, and the
-port lock means a hand-run can never end up driving the panel beside it. When
-the faceplate moves to the Steam Machine, turn it off here — the Decky plugin in
-direct mode becomes the pusher and only the bridge stays:
+you run the agent on: it runs `tools/panel_screen.py`, the one process allowed
+to write the port, and the port lock means a hand-run can never end up driving
+the panel beside it. When the faceplate moves to the Steam Machine, turn it off
+here — the Decky plugin in direct mode becomes the pusher and only the bridge
+stays:
 
 ```bash
 systemctl --user disable --now jsaux-pixel-panel
 ```
+
+## Content on the panel
+
+The runner is a scheduler, not a loop: one process decides what is showing and
+uploads only when that changes. The AI Agent screen is one source among several,
+and a notification pre-empts the rest.
+
+```bash
+python3 tools/panel_screen.py --list                 # screens and what each can say
+python3 tools/panel_notify.py "Build failed" "3 tests failed in decky"
+python3 tools/panel_notify.py --list --clear         # inspect, forget
+python3 tools/gif_prep.py some.gif                   # fit an animation to the panel
+python3 tools/panel_screen.py --only calendar --gif cal.gif   # look without hardware
+```
+
+| screen | where its content comes from | config |
+|---|---|---|
+| `ai` | the provider, through the bridge above | always the fallback view |
+| `notify` | a spool directory anything can write into | `JSAUX_PIXEL_NOTIFY_DIR` |
+| `calendar` | local `.ics` files (sync them yourself) | `JSAUX_PIXEL_CALENDAR_DIR` |
+| `gif` | animations `gif_prep.py` approved | `JSAUX_PIXEL_GIF_DIR` |
+
+Motion lives **inside one upload** — the tip loops what it is holding, measured
+still looping 122 s later — so a quiet screen costs one upload and an animated
+one costs one upload per change. Why that is the only design that works, and
+what to check when a screen misbehaves, is in
+[`docs/panel-features.md`](docs/panel-features.md).
 
 ## Measuring the panel
 

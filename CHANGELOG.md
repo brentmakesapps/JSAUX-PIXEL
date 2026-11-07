@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The panel now has more than one thing to say.** A scheduler (`backend/panel_screens.py`)
+  owns the port and chooses what is showing; the AI Agent screen is one source
+  among four. `tools/panel_screen.py` is the runner (and what the service runs):
+  it ticks once a second and uploads only when the answer is new bytes, because
+  the tip loops what it holds.
+  - **Notifications** pre-empt everything: `tools/panel_notify.py "title" "body"`
+    writes into a spool directory, so anything that can write a file can put a
+    card on the panel. A message that fits is one still frame; a long one scrolls
+    one row, and the scroll is trimmed to an 8 KB upload rather than held.
+  - **Calendar** shows the next event from local `.ics` files with a countdown
+    (`in 39m`, `in 3d`) - no account client, so the panel host keeps no
+    credentials. Daily/weekly repeats are expanded; monthly ones are documented
+    as not expanded rather than guessed at.
+  - **Prepared animations**: `tools/gif_prep.py` fits a GIF to what the panel can
+    actually play (64x54, small palette, 4cs floor, frames trimmed to a budget)
+    and prints what it dropped, because the tip refuses a blob over 32 KiB and a
+    whole frame costs 2,045 bytes.
+  - `tools/panel_screen.py --list` and `--only NAME --gif out.gif` show what each
+    source can say and write the upload out without touching hardware.
+  - Design, decisions and the debug paths: `docs/panel-features.md`.
+
 - AI Agent screen now shows **your own local provider** instead of Codex/OpenAI,
   read straight from Strata itself: the engine monitor (`GET /metrics`,
   `GET /slots`) plus the gateway (`/health`, `/v1/models`). Shows the loaded

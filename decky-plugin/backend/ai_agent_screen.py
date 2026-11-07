@@ -466,6 +466,21 @@ def _quantize_into(pixels: list, palette: list, index_of: dict) -> list:
     return indices
 
 
+def encode_frames(buffers, delay_cs: int = 10) -> bytes:
+    """Quantize whole RGB frames onto one shared palette and encode them.
+
+    Every screen builds frames the same way - draw, then hand them here - so the
+    palette rule (one palette for the whole upload, colours added as they are
+    seen) is stated once. Keeping the palette shared is also what keeps patched
+    frames small.
+    """
+    palette: list = []
+    index_of: dict = {}
+    indices = [_quantize_into(pixels, palette, index_of) for pixels in buffers]
+    return gif_encoder.encode(MATRIX_WIDTH, MATRIX_HEIGHT, palette, indices,
+                                delay_cs=max(1, int(delay_cs)))
+
+
 def render_stats_gif(
     stats: dict,
     phase: int = 0,
