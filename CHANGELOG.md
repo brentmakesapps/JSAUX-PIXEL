@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The panel can be held on one view** instead of cycling, which is how a
+  screen gets properly looked at. The lock is a small file
+  (`~/.config/jsaux-pixel/view.json`) that the runner re-reads once a tick, so
+  changing it is a write rather than a restart and never puts a second writer on
+  the USB link. A lock outranks the rotation but not a notification; a lock on a
+  screen with nothing to say falls back to the rotation. `pick` narrows a locked
+  screen inside itself - with the gif screen held, which of the sixteen, and
+  `tools/panel_view.py next` walks them.
+  - `~/.config/pleamar/shells/panel-view`: a pill on the bottom bar - AI / CAL /
+    GIF / NEXT / AUTO - that only ever calls that command, and reads its `--json`
+    back to say what the panel is doing.
+
 - **The panel now has more than one thing to say.** A scheduler (`backend/panel_screens.py`)
   owns the port and chooses what is showing; the AI Agent screen is one source
   among four. `tools/panel_screen.py` is the runner (and what the service runs):

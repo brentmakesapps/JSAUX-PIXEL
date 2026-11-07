@@ -66,6 +66,7 @@ class GifSource(Source):
         self.directory = directory or gif_dir()
         self._files: list = []
         self._cursor = 0
+        self._pinned: int | None = None
         self._checked_at = 0.0
         self._turn = 0.0
 
@@ -85,15 +86,46 @@ class GifSource(Source):
     def turn_seconds(self) -> float:
         return self._turn
 
+    def set_pick(self, pick: str) -> None:
+        """Hold this source on one file in the directory, by name or stem.
+
+        The lock's question, not the rotation's: a panel pinned to the gif screen
+        can be pointed at one animation, and ``next`` walks the directory. While
+        anything is pinned the cursor does not advance on its own, which is what
+        makes the pin hold - the bus asks this method every tick and calls
+        ``gif()`` every tick, and ``gif()`` would otherwise move on.
+        """
+        wanted = str(pick or "").strip().lower()
+        if not wanted:
+            self._pinned = None
+            return
+        for index, path in enumerate(self._files):
+            if path.stem.lower() == wanted or path.name.lower() == wanted:
+                self._pinned = index
+                return
+        # An unknown name is ignored rather than jumped to, so a typo leaves the
+        # rotation where it was instead of showing nothing.
+        self._pinned = None
+
+    def _serve_index(self) -> int:
+        """The file to serve now, and the cursor on to the next unless pinned."""
+        total = len(self._files)
+        index = self._pinned if self._pinned is not None else self._cursor % total
+        if self._pinned is None:
+            self._cursor += 1
+        return index
+
     def describe(self, now: float) -> str:
-        current = self._files[self._cursor % len(self._files)] if self._files else None
-        return f"gif:{current.name}" if current else "gif"
+        if not self._files:
+            return "gif"
+        path = self._files[self._pinned if self._pinned is not None
+                            else self._cursor % len(self._files)]
+        return f"gif:{path.name}"
 
     def gif(self, clock: PlaybackClock) -> bytes | None:
         if not self._files:
             return None
-        path = self._files[self._cursor % len(self._files)]
-        self._cursor += 1
+        path = self._files[self._serve_index()]
         try:
             data = path.read_bytes()
         except OSError:

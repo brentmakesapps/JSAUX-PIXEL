@@ -29,6 +29,8 @@ prepared GIFs -/
   transport. This is what `jsaux-pixel-panel.service` runs.
 * `tools/panel_notify.py` - how anything on this box posts to the panel.
 * `tools/gif_prep.py` - the budget linter for animations.
+* `tools/panel_view.py` - say what the panel should be showing: the
+  timed rotation, or one view held.
 
 The AI Agent screen stays what it was (`backend/ai_agent_screen.py`); the bus
 just wraps it as one source.
@@ -45,6 +47,7 @@ just wraps it as one source.
 | Animations are **generated here, then budget-checked** | one whole-panel frame costs 2,045 bytes literal, 1,603 compressed, so "any GIF" is not a runtime property - the files in `media/gifs` only fit as 5-39 frame flickers. `tools/panel_anim.py` redraws the ones that are geometry; `tools/gif_prep.py` lints anything else and says what it did |
 | Brightness and firmware animations are **not used** | both are unanswered or rejected on this tip (see the limits table) |
 | The runner is one program, so it runs the same way here and on the Deck | when the panel moves, the Deck runs `panel_screen.py` (or the plugin) pointed at the bridge; nothing about the content changes |
+| The view is held by **a file the runner re-reads**, not a flag or a restart | the thing that changes the view (a test, a desktop widget) is a different process from the one that owns the port, and a second writer on that link is exactly what the rest of the design avoids; a write lands inside a second |
 
 ## What one upload costs, as built
 
@@ -68,6 +71,7 @@ right trade on a link where every byte is a round trip.
 | notification spool | `~/.local/share/jsaux-pixel/notify/` · `JSAUX_PIXEL_NOTIFY_DIR` |
 | calendars | `~/.config/jsaux-pixel/calendar.ics` (or every `.ics` in that dir) · `JSAUX_PIXEL_CALENDAR` |
 | approved animations | `~/.local/share/jsaux-pixel/gif/` · `JSAUX_PIXEL_GIF_DIR` |
+| the view - rotate, or hold one screen | `~/.config/jsaux-pixel/view.json` · `JSAUX_PIXEL_VIEW` |
 | the panel runner's state | nothing on disk: the tip holds the last upload |
 
 ## How to see it working
@@ -100,6 +104,68 @@ fastest way to find out whether a layout problem is the renderer or the link.
 5. **Layout wrong**: `--png` a frame and look at it; the camera path
    (`tools/panel_cam.py grab`) is there to compare what was drawn with what the
    panel shows.
+
+## Holding the panel on one view
+
+The rotation is what makes four screens work on one small panel. Checking a
+screen is the other case: watching one for 12 s and then losing it for eight
+minutes makes a change hard to see. So the panel can be **held** on one screen,
+and on one thing *inside* that screen.
+
+The lock is a **file, not a restart**. `~/.config/jsaux-pixel/view.json`
+(`JSAUX_PIXEL_VIEW` moves it) holds
+
+    {"mode": "lock", "screen": "gif", "pick": "cube-field"}
+
+and the runner re-reads it once a tick, on its modification time. That is the
+whole reason it is a file rather than a flag or a second process: whatever
+changes the view - a test, a shell, a hand at a keyboard - is a different process
+from the one that owns the port, and two writers on that link is precisely the
+mistake the rest of this design exists to avoid. A change lands within a second
+and needs no restart.
+
+Precedence: **a lock outranks the rotation, but not a notification**. Holding the
+panel on an animation is a preference about what to decorate, not a reason to
+miss something arriving; the card pre-empts and the held view comes back after
+it. A lock on a screen that has nothing to say - the AI card with no agent
+running - falls back to the rotation instead of showing a blank.
+
+`pick` is the view's second degree. With the gif screen held it says *which* of
+the sixteen, and while anything is pinned the gif cursor stops advancing: the
+bus calls `gif()` every tick, and unpinned it would move on every second.
+`set_pick` is a method on every source and a no-op on the base class, which is
+why the calendar and the AI card simply ignore it. An unknown name is ignored
+rather than jumped to, so a typo leaves the panel where it was instead of
+showing nothing.
+
+`tools/panel_view.py` is the door, and it never opens the port:
+
+    tools/panel_view.py                          # what it is doing now
+    tools/panel_view.py lock gif --pick gears     # that animation, and only it
+    tools/panel_view.py next                      # next thing inside the lock
+    tools/panel_view.py auto                      # back to the timed rotation
+    tools/panel_view.py --json                    # one line, for something else to read
+
+`~/.config/pleamar/shells/panel-view` is the pill on the bottom bar: **AI / CAL /
+GIF / NEXT / AUTO**, with a dot for the state - leaf cycling, accent a held
+screen, sand a held animation, which is the one state where NEXT means something.
+It is a thin client on purpose: every press calls that same command, and the
+read-back of its `--json` every 5 s is all the pill shows, so the command's
+validation and its atomic write stay the only authority. That is the rule the
+darkflash card follows for the case display, and the reason the pill can sit
+open while the service runs. It belongs to the bar rather than taking a corner of
+its own: darkflash holds `0..560` and strata `2864..3840`, so its surface runs
+`0..2856` along the bottom and its pill ends 8 px short of strata, on the dock's
+own 8 px line. A surface's empty part lets clicks through, which is what buys
+that reach without covering anything.
+
+Verified on the desk - and the first attempt failed in a way worth recording:
+the running service was the process started *before* this code existed, so the
+service has to be restarted once for the lock to mean anything. After that,
+`lock gif --pick cube-field` logged `view: lock gif:cube-field` and `screen: gif
+(locked to gif)`, and then 26 s of nothing at all - no rotation, no re-upload.
+Two camera grabs 24 s apart showed the same animation. `next` logged `view: lock
+gif:cyclone` and pushed 22,498 bytes, and `auto` put the rotation back.
 
 ## Replicating the GIFs
 

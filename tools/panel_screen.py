@@ -30,7 +30,7 @@ from backend.ai_agent_source import AiAgentSource  # noqa: E402
 from backend.calendar_source import CalendarSource  # noqa: E402
 from backend.gif_screen import GifSource  # noqa: E402
 from backend.notifications_source import NotificationsSource  # noqa: E402
-from backend.panel_screens import PanelBus  # noqa: E402
+from backend.panel_screens import LOCK, PanelBus, ViewLock, view_file  # noqa: E402
 from protocols.usb.transport import TransportError, UsbSerialTransport  # noqa: E402
 
 PORT = "/dev/ttyUSB0"
@@ -55,6 +55,8 @@ def main(argv=None) -> int:
     parser.add_argument("--baud", type=int, default=BAUD)
     parser.add_argument("--interval", type=float, default=TICK_S)
     parser.add_argument("--only", default="", help="show one screen, no rotation")
+    parser.add_argument("--view", default="",
+                        help="the view file to obey (default: the panel's own)")
     parser.add_argument("--frames", type=int, default=16)
     parser.add_argument("--delay", type=int, default=4)
     parser.add_argument("--once", action="store_true",
@@ -80,6 +82,13 @@ def main(argv=None) -> int:
         return 0
 
     bus = PanelBus(sources, log=log)
+    # The view file is re-read every tick, so `panel_view.py lock gif` changes
+    # what is showing without restarting this process.
+    view = ViewLock(view_file(args.view))
+    view.reload()
+    bus.set_view(view)
+    if view.mode == LOCK:
+        log("view: " + view.summary())
     if args.gif:
         result = bus.tick()
         if not result.get("gif"):

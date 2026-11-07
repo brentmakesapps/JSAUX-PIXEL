@@ -28,6 +28,7 @@ Debugging: ``tick()`` always says which source it chose and why, and
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -53,6 +54,99 @@ def expand(value: str) -> Path:
 DEFAULT_DWELL_S = 10.0
 # Guards against a source that says "available" but has nothing to draw.
 MAX_EMPTY_STRIKES = 3
+# Where the operator's say about what is showing lives: a small file, because
+# the thing that changes it (a widget, a shell, a test) is a different process
+# from the one that owns the port.
+DEFAULT_VIEW_FILE = "~/.config/jsaux-pixel/view.json"
+VIEW_FILE_ENV = "JSAUX_PIXEL_VIEW"
+ROTATE = "rotate"
+LOCK = "lock"
+
+
+def view_file(override: str = "") -> Path:
+    base = str(override or os.environ.get(VIEW_FILE_ENV, "")).strip()
+    return expand(base or DEFAULT_VIEW_FILE)
+
+
+class ViewLock:
+    """Rotate through the screens, or hold the panel on one of them.
+
+    This is read from a file once a tick rather than passed in on the command
+    line, so changing it is a write - not a restart, and not a second process
+    trying to take the port. That is what lets a desktop widget drive it: the
+    runner stays the only writer and notices within a second.
+
+    ``pick`` narrows a locked screen inside itself: with the gif screen locked,
+    ``pick`` is which animation, and ``next`` walks the directory.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or view_file()
+        self.mode = ROTATE
+        self.screen = ""
+        self.pick = ""
+        self._stamp = None
+        self.error = ""
+
+    def reload(self, now: float | None = None) -> bool:
+        """Re-read the file if it changed. Returns whether anything changed."""
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except OSError:
+            if self._stamp is None:
+                return False
+            self._stamp = None
+            changed = (self.mode, self.screen, self.pick) != (ROTATE, "", "")
+            self.mode, self.screen, self.pick = ROTATE, "", ""
+            return changed
+        if stamp == self._stamp:
+            return False
+        self._stamp = stamp
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError) as exc:
+            self.error = str(exc)
+            return False
+        wanted = str(data.get("mode", ROTATE)).strip().lower()
+        self.mode = LOCK if wanted == LOCK else ROTATE
+        self.screen = str(data.get("screen", "")).strip().lower()
+        self.pick = str(data.get("pick", "")).strip()
+        self.error = ""
+        return True
+
+    def write(self, mode: str, screen: str = "", pick: str = "") -> dict:
+        """Set the view, atomically, and say what it is now."""
+        mode = LOCK if str(mode).strip().lower() == LOCK else ROTATE
+        payload = {"mode": mode, "screen": screen.strip().lower(), "pick": pick.strip()}
+        if mode == ROTATE:
+            payload["screen"] = payload["pick"] = ""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.path.with_name(self.path.name + ".%d.tmp" % os.getpid())
+        try:
+            temp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            os.replace(str(temp), str(self.path))
+        except OSError:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        self.reload()
+        return self.state()
+
+    def state(self) -> dict:
+        return {"mode": self.mode, "screen": self.screen, "pick": self.pick,
+                 "path": str(self.path), "error": self.error}
+
+    def summary(self) -> str:
+        if self.mode != LOCK:
+            return ROTATE
+        if not self.screen:
+            return "lock (no screen named)"
+        return f"lock {self.screen}" + (f":{self.pick}" if self.pick else "")
+
+    def __repr__(self) -> str:
+        return f"ViewLock({self.summary()})"
 
 
 class PlaybackClock:
@@ -119,6 +213,15 @@ class Source:
         """How long one loop of this source's animation is (0 for stills)."""
         return 0.0
 
+    def set_pick(self, pick: str) -> None:
+        """Hold this screen on one thing inside itself, if it has insides.
+
+        Only the lock asks this: a panel pinned to the gif screen can be pointed
+        at one animation. A screen with nothing to choose between - the calendar,
+        the AI card - ignores it.
+        """
+        return None
+
     def describe(self, now: float) -> str:
         return self.name
 
@@ -141,6 +244,15 @@ class PanelBus:
         # winning the choice forever: "available" and "has pixels" are not the
         # same question, and a source can pass the first and fail the second.
         self._parked_until: dict[str, float] = {}
+        # The operator's say: rotate, or hold one screen. None means rotate.
+        self.view: ViewLock | None = None
+
+    def set_view(self, view: ViewLock | None) -> None:
+        """Give the bus the lock to read (see ``ViewLock``)."""
+        self.view = view
+
+    def view_summary(self) -> str:
+        return self.view.summary() if self.view is not None else ROTATE
 
     def source(self, name: str) -> Source | None:
         for item in self.sources:
@@ -150,6 +262,8 @@ class PanelBus:
 
     def choose(self, now: float, candidates: list[Source]) -> tuple[Source | None, str]:
         """The screen to show, and why."""
+        if self.view is not None and self.view.reload(now):
+            self.log("view: " + self.view.summary())
         if not candidates:
             return None, "nothing to show"
         urgent = [item for item in candidates if self._safe_urgent(item, now)]
@@ -158,6 +272,19 @@ class PanelBus:
             if self._current is not winner:
                 return winner, f"pre-empted by {winner.name}"
             return winner, f"holding {winner.name}"
+        # A lock outranks the rotation but not a notification: holding the panel
+        # on one screen is a preference about what to decorate, not a reason to
+        # miss something arriving.
+        if self.view is not None and self.view.mode == LOCK and self.view.screen:
+            pinned = [item for item in candidates if item.name == self.view.screen]
+            if pinned:
+                winner = pinned[0]
+                winner.set_pick(self.view.pick)
+                if self._current is not winner:
+                    return winner, f"locked to {winner.name}"
+                return winner, f"holding {winner.name}"
+            if not self.rotation:
+                return None, f"locked to {self.view.screen}, which is not showing"
         if not self.rotation:
             winner = max(candidates, key=lambda item: (item.priority, item.name))
             return winner, "highest priority"
