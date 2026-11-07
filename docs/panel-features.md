@@ -182,6 +182,20 @@ is ~1,600 bytes a frame compressed, so six frames of it is a second and a half o
 loop for 10 KB. There is no version of "a person" that fits; the redraws are
 geometry because geometry is what fits.
 
+### What sixteen of them does to the rotation
+
+Dwell is per source, measured from the last upload: `gif` 12 s at priority 20,
+`ai` 12 s at 60, `calendar` 8 s at 40, `notify` 15 s at 100 and pre-empting. The
+journal says a pass of the three rotating sources is **32.1 s** on this box, and
+`GifSource` hands out the next file in the directory each time it is visited - one
+visit in six got skipped, which is why the gif gap measured 51.6 s that pass. So
+with sixteen installed, a given animation is on the panel for ~14 s about once
+every **eight to nine minutes**. That is the honest cost of a big set on a serial
+link; the three ways to spend it differently are a smaller rotation directory, a
+shorter `gif` dwell, or drawing the next file at random instead of in order. None
+of them is obviously right, so the code keeps the simple one and this paragraph
+records what it costs.
+
 ### How an animation gets accepted
 
 `tools/panel_review.py` is the review. It stops `jsaux-pixel-panel.service` so
