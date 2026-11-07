@@ -81,7 +81,7 @@ sent as a request header.
 | `JSAUX_AGENT_STATS_URL` | unset | read agent stats from another host (see below) |
 | `JSAUX_AI_AGENT_PORT` / `JSAUX_AI_AGENT_BAUDRATE` | auto · 1000000 | direct-mode link |
 | `JSAUX_AI_AGENT_INTERVAL` / `JSAUX_AI_AGENT_TICK_SECONDS` | 1s · derived | how often the provider is polled, and how often a frame is pushed (by default the poll rate: one upload keeps animating on the panel until the numbers change) |
-| `JSAUX_AI_AGENT_FRAMES` / `JSAUX_AI_AGENT_FRAME_DELAY_CS` | 16 · 6cs | what one upload contains: 16 frames moving one cell each, so it **is** a whole turn of the activity mark, played at 16 steps a second. `frames × delay` is how long a turn takes, so `FRAME_DELAY_CS` is the spinner-speed knob (6cs = 0.96s a turn) |
+| `JSAUX_AI_AGENT_FRAMES` / `JSAUX_AI_AGENT_FRAME_DELAY_CS` | 16 · 4cs | what one upload contains: 16 frames moving one cell each, so it **is** a whole turn of the activity mark, played at 25 steps a second. `frames × delay` is how long a turn takes, so `FRAME_DELAY_CS` is the spinner-speed knob (4cs = 0.64s a turn; the tip floors the delay near 3cs, so faster than this stops helping) |
 
 | `JSAUX_AI_AGENT_SPINNER_STEP` | `16 / frames` | cells the activity mark moves per frame, when you want to set that instead of the turn length (the default keeps a turn whole, which is what makes it loop cleanly) |
 
@@ -147,6 +147,23 @@ direct mode becomes the pusher and only the bridge stays:
 ```bash
 systemctl --user disable --now jsaux-pixel-panel
 ```
+
+## Measuring the panel
+
+`docs/panel-limits.md` holds the numbers the design is built on - chunk size, the
+32 KiB blob ceiling, cost per frame by how much of it moves, and the fact the tip
+plays about 30 fps and no faster. They come from probes that live in the repo:
+
+```bash
+python3 tools/panel_probe.py all --report limits.json   # the link's limits
+python3 tools/panel_calib.py                            # where the panel is in frame
+python3 tools/panel_cam.py grab --scale 2               # look at the panel
+```
+
+The probe pauses the panel service so it is the only writer, and puts it back on
+the way out (and if it is killed, the next run puts it back first). `panel_calib`
+lights the matrix border and finds it by diffing two frames, so camera
+measurements are addressed in LED coordinates.
 
 ## Frontend note
 

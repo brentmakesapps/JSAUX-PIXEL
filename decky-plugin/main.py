@@ -57,7 +57,9 @@ AI_AGENT_DIRECT_REFRESH_SECONDS = 1.0
 # it holds, and a part-turn loop is the jump the earlier shape produced.
 # frames x delay_cs is how long a turn takes, so that is the spinner-speed knob.
 AI_AGENT_DIRECT_FRAMES = 16
-AI_AGENT_FRAME_DELAY_CS = 6
+# 25 steps a second: the tip plays 4cs exactly and floors anything faster
+# (docs/panel-limits.md), so this is as smooth as the panel gets.
+AI_AGENT_FRAME_DELAY_CS = 4
 # Upload cadence override: JSAUX_AI_AGENT_TICK_SECONDS. Unset = paced by the
 # stats poll, because the panel keeps looping the turn it already holds.
 AI_AGENT_DIRECT_PORT = ""

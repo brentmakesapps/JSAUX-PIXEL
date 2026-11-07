@@ -36,7 +36,10 @@ RECOVER_AFTER_FAILURES = 1
 # cell a step, which is a whole turn of the activity mark (16 cells) at 16 steps a
 # second. Frames are patched rather than resent, so that costs ~2.5KB, not 33KB.
 DEFAULT_FRAMES = 16
-DEFAULT_DELAY_CS = 6
+# 4cs (25 steps a second) is as fast as the tip plays: the probe filmed 4cs and
+# 6cs turning in exactly the asked time, but 2cs came out 1.46x slow, so the tip
+# floors the delay near 3cs. Going faster than this buys nothing.
+DEFAULT_DELAY_CS = 4
 
 DEMO_STATS = {
     "gateway": {"model": "qwen3.8-flash-next-iq3_s-256k", "max_context": 262144, "reachable": True},

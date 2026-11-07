@@ -47,6 +47,22 @@
   `BRIDGE_URL` in `backend/local_ai_stats.py` is the no-environment default for
   the Deck side. A bridge that is down still falls back to the gateway and the
   local database.
+- **The link's limits are now measured, in the repo.** `tools/panel_probe.py`
+  runs the measurements that the design quotes (chunk size, blob ceiling, cost
+  per frame, rotation cost, playback rate) with a time box per test so a rejected
+  blob cannot hang a run, and it refuses to measure unless it holds the port
+  lock. Results in [`docs/panel-limits.md`](docs/panel-limits.md). What changed
+  as a result: the tip's real ceiling is a **32 KiB** GIF buffer; **498 is the
+  device's chunk size** (996 and up are rejected - an earlier reading of
+  "16000 accepted" was the tip answering `GIF begin` for a blob it already had);
+  a chunk costs **73ms** so upload time is `ceil(bytes/498) × 73ms`; and the tip
+  plays **about 30 fps and no faster**, so `JSAUX_AI_AGENT_FRAME_DELAY_CS` now
+  defaults to 4 (25 steps a second) instead of 6 - 2cs measured 1.46x slow.
+- **The panel can look at itself.** `tools/panel_calib.py` lights the matrix
+  border and finds it by diffing against a dark frame, writing
+  `~/.config/opencode/jsaux-panel-calib.json`; `tools/panel_cam.py` grabs, films  and measures through that calibration in **LED coordinates**. The probe uses it
+  to time playback by filming the activity mark, which is how the frame-rate
+  floor above was measured instead of guessed.
 - Two processes driving the panel at once — how a leftover `--push --live` run
   ends up fighting a new one, interleaving frames and leaving the tip deaf — is
   now refused: `UsbSerialTransport` takes an advisory lock on the port and the
