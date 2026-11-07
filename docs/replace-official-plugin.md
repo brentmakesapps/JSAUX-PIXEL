@@ -32,4 +32,8 @@ you previously installed them via a closed package (see that package’s uninsta
 ## Notes
 
 - Without the closed companion, most Decky product UX still cannot drive hardware.
-- AI Agent shows local Codex session name + running state only (no OAuth / usage APIs).
+- AI Agent shows your own local provider (Strata's own `/metrics` + `/slots`
+  monitor, gateway for the loaded model; opencode only as a fallback), not
+  Codex/OpenAI: `JSAUX_AI_AGENT_PROVIDER=strata` (default) · `codex` restores the
+  old behaviour. `JSAUX_AI_AGENT_RENDER=direct` draws the frame in this repo and
+  uploads it over USB instead of asking the companion to do it.

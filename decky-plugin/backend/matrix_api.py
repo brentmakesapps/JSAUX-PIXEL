@@ -20,7 +20,7 @@ import base64
 
 from dataclasses import dataclass
 
-from . import usb_frames
+from . import gif_encoder, usb_frames
 from typing import Any, Sequence
 
 # Actual host-side panel size from the product USB stack (not 64×56).
@@ -277,6 +277,18 @@ def _quantize_frame(pixels: Sequence[RGB_TUPLE]) -> tuple[list[RGB_TUPLE], list[
 
 
 def _gif_from_indexed(
+    width: int,
+    height: int,
+    palette: Sequence[RGB_TUPLE],
+    frames: Sequence[Sequence[int]],
+    delay_cs: int,
+) -> bytes:
+    """Shim onto :mod:`gif_encoder` — the hand-rolled writer emitted a stream
+    strict decoders (including the panel) reject."""
+    return gif_encoder.encode(width, height, palette, list(frames), delay_cs=delay_cs)
+
+
+def _gif_from_indexed_legacy(
     width: int,
     height: int,
     palette: Sequence[RGB_TUPLE],

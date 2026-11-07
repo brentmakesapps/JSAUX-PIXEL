@@ -32,3 +32,7 @@ source_snapshot/
 # Keep the checked-in Decky frontend bundle
 !decky-plugin/dist/
 !decky-plugin/dist/index.js
+
+# Scratch: a pasted transcript from another tool, and chat images
+dot-display-llm-provider-stats-session.txt
+.openclaw-cli-images/

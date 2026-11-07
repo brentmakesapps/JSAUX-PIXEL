@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from protocols.usb.dy_frame import (  # noqa: E402
+    build_gif_end,
     build_screen_power,
     build_standard_frame,
     encode_gif_upload,
@@ -147,6 +148,23 @@ class TransportTests(unittest.TestCase):
         # begin + finish only; chunks skipped
         self.assertEqual(len(fake.writes), 2)
 
+    def test_gif_already_held_makes_a_finalize_rejection_harmless(self) -> None:
+        # begin 0x02 = "same content, skip the chunks"; the device then has no
+        # reason to accept a re-commit, but the frame is already displayed.
+        gif = b"GIF89a" + b"\x00" * 40
+        transfer = encode_gif_upload(gif, chunk_size=16)
+        fake = FakeSerial(
+            replies=[_ack(transfer.preamble, 0x02), _ack(transfer.finish, 0x00)]
+        )
+        with UsbSerialTransport(
+            port="/dev/fake",
+            serial_factory=lambda **kwargs: fake,
+            inter_packet_delay_s=0.0,
+        ) as bus:
+            finish = bus.upload_gif(gif, chunk_size=16)
+        self.assertEqual(finish.command, 0x0B)
+        self.assertEqual(len(fake.writes), 2)
+
     def test_gif_begin_reject(self) -> None:
         gif = b"GIF89a" + b"\x11" * 8
         transfer = encode_gif_upload(gif, chunk_size=8)
@@ -160,6 +178,50 @@ class TransportTests(unittest.TestCase):
         ) as bus:
             with self.assertRaises(TransportError):
                 bus.upload_gif(gif, chunk_size=8)
+
+
+    def test_recover_link_cycles_the_screen_power(self) -> None:
+        """A stuck tip only starts answering again after a power cycle."""
+        gif_end = build_gif_end()
+        off = build_screen_power(False)
+        on = build_screen_power(True)
+        fake = FakeSerial(replies=[_ack(gif_end, 0x01), _ack(off, 0x01), _ack(on, 0x01)])
+        with UsbSerialTransport(
+            port="/dev/fake",
+            serial_factory=lambda **kwargs: fake,
+            inter_packet_delay_s=0.0,
+            reply_timeout_s=0.05,
+        ) as bus:
+            awake = bus.recover_link(hold_s=0.05)
+        self.assertTrue(awake)
+        self.assertEqual(fake.writes, [gif_end, off, on])
+
+    def test_recover_link_survives_a_silent_panel(self) -> None:
+        fake = FakeSerial(replies=[])
+        with UsbSerialTransport(
+            port="/dev/fake",
+            serial_factory=lambda **kwargs: fake,
+            inter_packet_delay_s=0.0,
+            reply_timeout_s=0.02,
+            packet_retries=1,
+        ) as bus:
+            awake = bus.recover_link(hold_s=0.05)
+        self.assertFalse(awake)
+        # gif-end plus both power frames still went out.
+        self.assertEqual(len(fake.writes), 3)
+
+    def test_the_link_allows_only_one_writer(self) -> None:
+        """Two drivers on one link is how the panel ends up holding half a frame."""
+        port = "/dev/jsaux-lock-probe"
+        first = UsbSerialTransport(port=port, serial_factory=lambda **kw: FakeSerial())
+        try:
+            with self.assertRaises(TransportError) as held:
+                UsbSerialTransport(port=port, serial_factory=lambda **kw: FakeSerial())
+            self.assertIn("driving the panel", str(held.exception))
+        finally:
+            first.close()
+        with UsbSerialTransport(port=port, serial_factory=lambda **kw: FakeSerial()) as bus:
+            self.assertIsNotNone(bus)
 
 
 if __name__ == "__main__":

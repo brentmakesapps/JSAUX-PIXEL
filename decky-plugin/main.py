@@ -22,7 +22,17 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from backend.client import DaemonHttpClient
 from backend.matrix_api import MatrixDisplayAPI, render_countdown_frame  # noqa: F401
-from backend import usb_frames
+from backend import ai_agent_screen, local_ai_stats, usb_frames
+
+_AI_AGENT_BLANK_PAYLOAD = {
+    "sessionName": "",
+    "running": False,
+    "conversations": 0,
+    "primaryPercent": -1,
+    "secondaryPercent": -1,
+    "tokensPrimary": "--",
+    "tokensSecondary": "--",
+}
 
 
 CHRONOGRAPH_MAX_SECONDS = (99 * 3600) + (59 * 60) + 59
@@ -33,11 +43,45 @@ CUSTOM_ASSET_DIRECTORY_LIMIT = 24
 CUSTOM_ASSET_PREVIEW_LIMIT_BYTES = 512 * 1024
 CUSTOM_ASSET_MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
-# AI Agent: local Codex session name + running state only.
+# AI Agent screen: your own local provider, not a cloud account.
+# Strata gateway (/health, /v1/models) + opencode's own session database.
 # No OAuth, no auth.json reads, no ChatGPT/OpenAI usage APIs.
 AI_AGENT_SESSION_ACTIVE_MINUTES = 5
-AI_AGENT_SCREEN_REFRESH_MIN_SECONDS = 300.0
-AI_AGENT_SCREEN_REFRESH_MAX_SECONDS = 720.0
+AI_AGENT_SCREEN_REFRESH_MIN_SECONDS = 15.0
+AI_AGENT_SCREEN_REFRESH_MAX_SECONDS = 30.0
+# Direct USB rendering repaints on its own clock (no companion daemon).
+AI_AGENT_DIRECT_REFRESH_SECONDS = 1.0
+# Each upload carries the motion the panel plays until the next one arrives:
+# 16 frames, one cell a step, which is one whole turn of the 16-cell activity
+# mark at 16 steps a second. A whole turn is the point - the panel loops whatever
+# it holds, and a part-turn loop is the jump the earlier shape produced.
+# frames x delay_cs is how long a turn takes, so that is the spinner-speed knob.
+AI_AGENT_DIRECT_FRAMES = 16
+AI_AGENT_FRAME_DELAY_CS = 6
+# Upload cadence override: JSAUX_AI_AGENT_TICK_SECONDS. Unset = paced by the
+# stats poll, because the panel keeps looping the turn it already holds.
+AI_AGENT_DIRECT_PORT = ""
+AI_AGENT_DIRECT_BAUDRATE = 1_000_000
+# Failed pushes before the panel is power-cycled: a half-finished upload leaves
+# it answering nothing at all, and one failure already says that - waiting for
+# more only burns the retry ladder first.
+AI_AGENT_RECOVER_AFTER_FAILURES = 1
+# "strata" (local provider stats) or "codex" (the upstream session scanner).
+AI_AGENT_PROVIDER = "strata"
+# "daemon" = companion draws the screen; "direct" = we upload our own frames.
+AI_AGENT_RENDER = "direct"
+
+
+def _ai_agent_provider() -> str:
+    value = os.environ.get("JSAUX_AI_AGENT_PROVIDER", AI_AGENT_PROVIDER).strip().lower()
+    return value if value in ("strata", "codex", "off") else AI_AGENT_PROVIDER
+
+
+def _ai_agent_render_mode() -> str:
+    value = os.environ.get("JSAUX_AI_AGENT_RENDER", AI_AGENT_RENDER).strip().lower()
+    return "direct" if value == "direct" else "daemon"
+
+
 AI_AGENT_UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
@@ -231,31 +275,77 @@ def _ai_agent_scan_sessions() -> dict:
 
 
 def _ai_agent_screen_payload(force: bool = False) -> dict:
-    """Matrix screen: session name + running only (quota/token path removed)."""
-    del force
-    sessions = _ai_agent_scan_sessions()
-    return {
-        "sessionName": sessions.get("session_name") or "",
-        "running": bool(sessions.get("running")),
-        "conversations": min(int(sessions.get("running_count") or 0), 999),
-        "primaryPercent": -1,
-        "secondaryPercent": -1,
-        "tokensPrimary": "--",
-        "tokensSecondary": "--",
-    }
-
+    """Matrix screen payload: local provider stats mapped onto the built-in
+    AI Agent layout (name line, running badge, counter, two arcs, two counters).
+    Set JSAUX_AI_AGENT_PROVIDER=codex for the upstream Codex session scanner."""
+    provider = _ai_agent_provider()
+    if provider == "off":
+        return dict(_AI_AGENT_BLANK_PAYLOAD)
+    if provider == "codex":
+        sessions = _ai_agent_scan_sessions()
+        return {
+            "sessionName": sessions.get("session_name") or "",
+            "running": bool(sessions.get("running")),
+            "conversations": min(int(sessions.get("running_count") or 0), 999),
+            "primaryPercent": -1,
+            "secondaryPercent": -1,
+            "tokensPrimary": "--",
+            "tokensSecondary": "--",
+        }
+    return local_ai_stats.screen_payload(local_ai_stats.collect())
 
 
 def _ai_agent_status(force: bool = False) -> dict:
-    """Local Codex session name + running state (no OAuth / private APIs)."""
-    del force
-    sessions = _ai_agent_scan_sessions()
+    """Decky UI view: provider/gateway/agent state (no OAuth / private APIs)."""
+    provider = _ai_agent_provider()
+    if provider == "codex":
+        sessions = _ai_agent_scan_sessions()
+        return {
+            "authenticated": False,
+            "provider": "codex",
+            "running": bool(sessions.get("running")),
+            "session_name": sessions.get("session_name") or "",
+            "sessions": sessions,
+            "active_minutes": AI_AGENT_SESSION_ACTIVE_MINUTES,
+            "generated_at": int(time.time()),
+        }
+    if provider == "off":
+        return {"authenticated": False, "provider": "off", "running": False,
+                "session_name": "", "generated_at": int(time.time())}
+    stats = local_ai_stats.collect()
+    display = stats.get("display") or {}
+    gateway = stats.get("gateway") or {}
+    agent = stats.get("agent") or {}
     return {
         "authenticated": False,
-        "running": bool(sessions.get("running")),
-        "session_name": sessions.get("session_name") or "",
-        "sessions": sessions,
-        "active_minutes": AI_AGENT_SESSION_ACTIVE_MINUTES,
+        "provider": "strata",
+        "render": _ai_agent_render_mode(),
+        "running": bool(display.get("running")),
+        "session_name": display.get("session_name") or "",
+        "model": gateway.get("model") or agent.get("model") or "",
+        "model_loaded": bool(gateway.get("loaded")),
+        "loading_model": gateway.get("loading_model") or "",
+        "context_limit": display.get("context_limit") or 0,
+        "read_percent": display.get("read_percent"),
+        "gen_percent": display.get("gen_percent"),
+        "phase_kind": display.get("phase_kind"),
+        "progress_percent": display.get("progress_percent"),
+        "context_percent": display.get("context_percent"),
+        "settled": bool(display.get("settled")),
+        "tokens_read": display.get("tokens_read"),
+        "tokens_generated": display.get("tokens_generated"),
+        "tok_per_s": display.get("tok_per_s"),
+        "sessions_active": int(agent.get("sessions_active") or 0),
+        "agent_source": display.get("agent_source"),
+        "engine_state": display.get("engine_state") or "",
+        "phase": display.get("phase") or "",
+        "vram_percent": display.get("vram_percent"),
+        "context_used": display.get("context_used") or 0,
+        "slots_busy": display.get("slots_busy") or 0,
+        "queued": display.get("queued") or 0,
+        "monitor_error": (stats.get("monitor") or {}).get("error"),
+        "gateway": gateway,
+        "agent": agent,
         "generated_at": int(time.time()),
     }
 
@@ -285,6 +375,7 @@ class Plugin:
         self._chronograph_loop_active = False
         self._chronograph_watchdog_generation = 0
         self._ai_agent_generation = 0
+        self._ai_agent_last_gif: bytes | None = None
 
     async def get_status(self):
         status = await self.client.aget("/v1/device")
@@ -667,7 +758,16 @@ class Plugin:
         return {"mode": "daemon", "moduleId": "chronograph", **result}
 
     async def send_ai_agent_monitor(self, port: str = "", baudrate: int = 1000000):
-        del port, baudrate
+        if _ai_agent_render_mode() == "direct":
+            # We draw the screen ourselves; the companion daemon stays out of it.
+            env_port = os.environ.get("JSAUX_AI_AGENT_PORT", "").strip()
+            if port and not env_port:
+                os.environ["JSAUX_AI_AGENT_PORT"] = str(port)
+            if baudrate:
+                os.environ.setdefault("JSAUX_AI_AGENT_BAUDRATE", str(baudrate))
+            pushed = await asyncio.to_thread(self._push_ai_agent_frame, 0)
+            self._start_ai_agent_direct_loop()
+            return pushed
         # Activate first so the screen switches instantly; session name/running lands via push.
         activation = await self._activate_daemon_module("ai_agent")
         if not activation.get("ok", True):
@@ -697,6 +797,8 @@ class Plugin:
         self._chronograph_generation += 1
         self._chronograph_loop_active = False
         self._ai_agent_generation += 1
+        # Another module may draw over the panel; force the next repaint.
+        self._ai_agent_last_gif = None
 
     async def _activate_daemon_module(
         self,
@@ -877,6 +979,150 @@ class Plugin:
                     decky.logger.info(f"AI Agent screen refresh skipped: {exc}")
 
         thread = threading.Thread(target=run, name="jsaux-ai-agent-monitor", daemon=True)
+        thread.start()
+
+    def _ai_agent_direct_settings(self) -> tuple[str | None, int, float]:
+        port = os.environ.get("JSAUX_AI_AGENT_PORT", AI_AGENT_DIRECT_PORT).strip() or None
+        try:
+            baud = int(os.environ.get("JSAUX_AI_AGENT_BAUDRATE", AI_AGENT_DIRECT_BAUDRATE))
+        except (TypeError, ValueError):
+            baud = AI_AGENT_DIRECT_BAUDRATE
+        try:
+            interval = float(os.environ.get("JSAUX_AI_AGENT_INTERVAL", AI_AGENT_DIRECT_REFRESH_SECONDS))
+        except (TypeError, ValueError):
+            interval = AI_AGENT_DIRECT_REFRESH_SECONDS
+        return port, baud, max(0.5, interval)
+
+    def _push_ai_agent_frame(self, phase: int = 0) -> dict:
+        """Direct mode: render our own stats frame and play it on the panel.
+
+        The companion daemon owns USB when it is installed; this path is for
+        the open stack only, hence the port lock and the bounded retries.
+        """
+        from protocols.usb.transport import TransportError, UsbSerialTransport
+
+        port, baud, interval = self._ai_agent_direct_settings()
+        # Stats are polled once a second and one upload carries a whole turn of
+        # the activity mark (16 frames at 6cs, 16 steps a second), so the panel
+        # keeps spinning between uploads - see backend/ai_agent_screen.py.
+        cached = getattr(self, "_ai_agent_stats_cache", None)
+        if cached is None or (time.monotonic() - cached[1]) >= interval:
+            cached = (local_ai_stats.collect(), time.monotonic())
+            self._ai_agent_stats_cache = cached
+        stats = cached[0]
+        frames = max(1, int(os.environ.get("JSAUX_AI_AGENT_FRAMES", AI_AGENT_DIRECT_FRAMES)))
+        delay_cs = max(1, int(os.environ.get("JSAUX_AI_AGENT_FRAME_DELAY_CS",
+                                            AI_AGENT_FRAME_DELAY_CS)))
+        gif = ai_agent_screen.render_stats_gif(
+            stats, 0, delay_cs=delay_cs, frames=frames,
+            start_cell=self._ai_agent_playback_cell(frames, delay_cs),
+        )
+        # The device answers "same content" and then refuses finalize, which
+        # reads as a failed upload; skip the round trip when nothing changed.
+        if gif == getattr(self, "_ai_agent_last_gif", None):
+            return {"ok": True, "mode": "direct", "unchanged": True, "bytes": len(gif),
+                    "display": stats["display"]}
+        last_error: Exception | None = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.4 * attempt)
+            try:
+                with self._serial_lock:
+                    with UsbSerialTransport(port=port, baudrate=baud) as bus:
+                        if not getattr(self, "_ai_agent_powered", False):
+                            # A screen that has slept takes a power frame before
+                            # it will take a frame at all.
+                            bus.set_power(True)
+                            self._ai_agent_powered = True
+                        bus.upload_gif(gif)
+                self._ai_agent_last_gif = gif
+                self._ai_agent_gif_bytes = len(gif)
+                return {"ok": True, "mode": "direct", "bytes": len(gif), "display": stats["display"]}
+            except (TransportError, OSError, ImportError) as exc:
+                last_error = exc
+        decky.logger.info(f"AI Agent direct frame skipped: {last_error}")
+        return {
+            "ok": False,
+            "mode": "direct",
+            "bytes": len(gif),
+            "error": str(last_error),
+            "display": stats["display"],
+        }
+
+    def _ai_agent_playback_cell(self, frames: int, delay_cs: int) -> int:
+        """Ring cell the panel's own loop will be on when this upload lands.
+
+        An upload carries a whole turn, so the loop the tip plays keeps phase
+        with this clock; building the next upload from the cell the clock has
+        reached is what stops the mark jumping sideways when new data arrives.
+        """
+        started = getattr(self, "_ai_agent_clock_start", None)
+        if started is None:
+            started = self._ai_agent_clock_start = time.monotonic()
+        wire = ai_agent_screen.upload_seconds(getattr(self, "_ai_agent_gif_bytes", 2500))
+        return ai_agent_screen.playback_cells(time.monotonic() - started + wire,
+                                               ai_agent_screen.turn_seconds(frames, delay_cs))
+
+    def _ai_agent_gif_seconds(self) -> float:
+        """How long one upload plays for on the panel."""
+        frames = max(1, int(os.environ.get("JSAUX_AI_AGENT_FRAMES", AI_AGENT_DIRECT_FRAMES)))
+        delay = max(1, int(os.environ.get("JSAUX_AI_AGENT_FRAME_DELAY_CS",
+                                         AI_AGENT_FRAME_DELAY_CS)))
+        return frames * delay / 100.0
+
+    def _recover_ai_agent_link(self) -> bool:
+        """Power-cycle the panel to clear an upload it is still holding.
+
+        An interrupted transfer leaves the tip waiting for bytes that never
+        come, and after that it answers nothing: every push reads as a timeout
+        until the panel is cycled.
+        """
+        from protocols.usb.transport import UsbSerialTransport
+
+        port, baud, _ = self._ai_agent_direct_settings()
+        self._ai_agent_powered = False
+        try:
+            with self._serial_lock:
+                with UsbSerialTransport(port=port, baudrate=baud, reply_timeout_s=2.0) as bus:
+                    return bus.recover_link()
+        except Exception as exc:  # noqa: BLE001 - never let recovery kill the loop
+            decky.logger.info(f"AI Agent panel recovery failed: {exc}")
+            return False
+
+    def _start_ai_agent_direct_loop(self):
+        self._ai_agent_generation += 1
+        generation = self._ai_agent_generation
+        # The upload carries a whole turn, so the panel keeps looping it while
+        # nothing changes: the loop is paced by the stats poll, not by motion.
+        _, _, interval = self._ai_agent_direct_settings()
+        try:
+            tick = float(os.environ.get("JSAUX_AI_AGENT_TICK_SECONDS")
+                         or max(interval, self._ai_agent_gif_seconds()))
+        except (TypeError, ValueError):
+            tick = max(interval, self._ai_agent_gif_seconds())
+        tick = max(0.1, tick)
+
+        def run():
+            phase = 0
+            failures = 0
+            while generation == self._ai_agent_generation:
+                # Frames go out on the tick; the stats behind them are polled
+                # once per JSAUX_AI_AGENT_INTERVAL inside the push.
+                time.sleep(tick * (2 ** min(failures, 4)))
+                if generation != self._ai_agent_generation:
+                    return
+                result = self._push_ai_agent_frame(phase)
+                phase += 1
+                if result.get("ok"):
+                    failures = 0
+                else:
+                    failures += 1
+                    if failures >= AI_AGENT_RECOVER_AFTER_FAILURES:
+                        decky.logger.info("AI Agent direct: power-cycling the panel")
+                        self._recover_ai_agent_link()
+                        failures = 0
+
+        thread = threading.Thread(target=run, name="jsaux-ai-agent-direct", daemon=True)
         thread.start()
 
     def _start_countdown_monitor_loop(self, port: str = "", baudrate: int = 1000000):
