@@ -159,6 +159,11 @@ its own: darkflash holds `0..560` and strata `2864..3840`, so its surface runs
 own 8 px line. A surface's empty part lets clicks through, which is what buys
 that reach without covering anything.
 
+If a click ever seems stolen from the dock or from darkflash, the answer is the
+same surface: cut it back with a four-value `margin: 0, 984, 0, 1456` and move the
+row's `at:` into what is left - a surface can be placed by margin instead of being
+wide, but then it cannot be wider than what that leaves.
+
 The pill is not in this repo, following darkflash: the shells belong to the
 desktop, not to the project. If the panel moves to another machine, that file
 pair - `shells/panel-view/panel-view.plm` and `.luau` - plus one line in
