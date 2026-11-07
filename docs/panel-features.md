@@ -159,6 +159,11 @@ its own: darkflash holds `0..560` and strata `2864..3840`, so its surface runs
 own 8 px line. A surface's empty part lets clicks through, which is what buys
 that reach without covering anything.
 
+The pill is not in this repo, following darkflash: the shells belong to the
+desktop, not to the project. If the panel moves to another machine, that file
+pair - `shells/panel-view/panel-view.plm` and `.luau` - plus one line in
+`~/.config/pleamar/autostart` is the whole of it.
+
 Verified on the desk - and the first attempt failed in a way worth recording:
 the running service was the process started *before* this code existed, so the
 service has to be restarted once for the lock to mean anything. After that,
