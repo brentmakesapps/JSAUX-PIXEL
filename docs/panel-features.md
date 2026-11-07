@@ -156,15 +156,27 @@ read-back of its `--json` every 5 s is all the pill shows, so the command's
 validation and its atomic write stay the only authority. That is the rule the
 darkflash card follows for the case display, and the reason the pill can sit
 open while the service runs. It belongs to the bar rather than taking a corner of
-its own: darkflash holds `0..560` and strata `2864..3840`, so its surface runs
-`0..2856` along the bottom and its pill ends 8 px short of strata, on the dock's
-own 8 px line. A surface's empty part lets clicks through, which is what buys
-that reach without covering anything.
+its own, and the bar is spoken for: darkflash's surface is `0..560`, strata's
+`2864..3840`, and marea's dock ends near `2230`. So the pill's surface is **the
+width of the pill and no more** - `560 x 72`, anchored `bottom_right` with
+`margin: 0, 992, 0, 0`, which puts it at `2288..2848`: 8 px clear of strata's
+surface, well clear of the dock, and on its 8 px line. Nothing of it lies over
+another shell - checked with `pleamar-wm agent layers`, which says where every
+shell's surface really is, and a picture of the bar.
 
-If a click ever seems stolen from the dock or from darkflash, the answer is the
-same surface: cut it back with a four-value `margin: 0, 984, 0, 1456` and move the
-row's `at:` into what is left - a surface can be placed by margin instead of being
-wide, but then it cannot be wider than what that leaves.
+Getting that placement right cost two pleamar lessons worth writing down, because
+both failed silently:
+
+- **A surface's `margin:` counts only on the side it is anchored to.** With
+  `anchor: bottom_left`, a right margin of 992 did nothing and the surface stayed
+  at x 0 - so the pill drew off its own left edge. `bottom_right` plus a right
+  margin is what puts it where the bar has room.
+- **A surface is not grown by what a `row` lays out in it either.** The row wanted
+  538 px, the surface said 520, the row hung off the left, and the state dot - the
+  one shape that carries the state - fell outside and was simply **not drawn**,
+  with nothing said in the log. `pleamar --say panel-view describe` gave it away:
+  the text sat at x -77. So: make the surface wide enough for the row, and read
+  back where it landed instead of assuming it.
 
 The pill is not in this repo, following darkflash: the shells belong to the
 desktop, not to the project. If the panel moves to another machine, that file

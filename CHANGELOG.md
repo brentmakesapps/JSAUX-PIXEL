@@ -12,7 +12,9 @@
   `tools/panel_view.py next` walks them.
   - `~/.config/pleamar/shells/panel-view`: a pill on the bottom bar - AI / CAL /
     GIF / NEXT / AUTO - that only ever calls that command, and reads its `--json`
-    back to say what the panel is doing.
+    back to say what the panel is doing. It takes the gap in the bar between the
+    dock and the strata pill, and no more: its surface is the width of the pill,
+    so it lies over nothing that was already there.
 
 - **The panel now has more than one thing to say.** A scheduler (`backend/panel_screens.py`)
   owns the port and chooses what is showing; the AI Agent screen is one source
