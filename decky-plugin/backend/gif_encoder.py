@@ -54,6 +54,79 @@ def _lzw_uncompressed(indices: Sequence[int], min_code_size: int) -> bytes:
     return bytes(out)
 
 
+def _lzw_compressed(indices: Sequence[int], min_code_size: int) -> bytes:
+    """Real LZW: dictionary codes, so mostly-empty frames cost almost nothing.
+
+    The literal-only writer above is simple but charges for every cell inside
+    the changed rectangle, which is what caps an animation at a few dozen
+    frames. Compressing means a frame that repaints a band across the whole
+    panel costs the cells it changed instead.
+
+    GIF's deferred convention: a table entry is added for the string that was
+    just rejected, the decoder learns one code behind, and the code width
+    follows the same lag. A CLEAR is emitted when the table is full.
+    """
+    clear = 1 << min_code_size
+    end = clear + 1
+    code_size = min_code_size + 1
+    last_code = (1 << 12) - 1  # GIF's dictionary ceiling
+
+    table: dict[tuple[int, int], int] = {}
+    next_code = clear + 2
+
+    out = bytearray()
+    bit_buffer = 0
+    bit_count = 0
+
+    def put(code: int) -> None:
+        nonlocal bit_buffer, bit_count
+        bit_buffer |= code << bit_count
+        bit_count += code_size
+        while bit_count >= 8:
+            out.append(bit_buffer & 0xFF)
+            bit_buffer >>= 8
+            bit_count -= 8
+
+    def reset() -> None:
+        nonlocal table, next_code, code_size
+        table = {}
+        next_code = clear + 2
+        code_size = min_code_size + 1
+
+    if not indices:
+        put(clear)
+        put(end)
+        if bit_count:
+            out.append(bit_buffer & 0xFF)
+        return bytes(out)
+
+    put(clear)
+    previous = int(indices[0])
+    for code in indices[1:]:
+        code = int(code)
+        pair = (previous, code)
+        found = table.get(pair)
+        if found is not None:
+            previous = found
+            continue
+        put(previous)
+        if next_code <= last_code:
+            table[pair] = next_code
+            next_code += 1
+            if next_code > (1 << code_size):
+                code_size += 1
+        else:
+            # Table full: clear and start learning again.
+            put(clear)
+            reset()
+        previous = code
+    put(previous)
+    put(end)
+    if bit_count:
+        out.append(bit_buffer & 0xFF)
+    return bytes(out)
+
+
 def _changed_box(previous: Sequence[int], current: Sequence[int], width: int):
     """Bounding box of the pixels that differ, or None when nothing does.
 
@@ -101,13 +174,20 @@ def encode(
     delay_cs: int = 100,
     loop: bool = True,
     difference: bool = True,
+    compress: bool = False,
 ) -> bytes:
     """One GIF from a palette plus per-frame index lists (row-major, w*h long).
 
     ``difference`` sends each frame after the first as only the rectangle that
     changed against the frame before it. Turn it off to resend every frame in
     full, which is ~2 KB a frame on this panel.
+
+    ``compress`` uses real LZW instead of literal-only codes: the same frames
+    cost a fraction of the bytes when the changed rectangle is mostly empty,
+    which is the difference between an animation that fits the tip's GIF buffer
+    and one that does not.
     """
+    emit = _lzw_compressed if compress else _lzw_uncompressed
     bits = _color_table_bits(palette)
     table_entries = 1 << bits
     min_code_size = max(2, bits)
@@ -150,7 +230,7 @@ def encode(
         gif += int(box_w).to_bytes(2, "little")
         gif += int(box_h).to_bytes(2, "little")
         gif.append(0x00)  # no local color table, not interlaced
-        data = _lzw_uncompressed(_patch(indices, width, box), min_code_size)
+        data = emit(_patch(indices, width, box), min_code_size)
         gif.append(min_code_size)
         for offset in range(0, len(data), 255):
             block = data[offset : offset + 255]

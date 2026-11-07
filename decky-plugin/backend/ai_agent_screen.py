@@ -466,19 +466,24 @@ def _quantize_into(pixels: list, palette: list, index_of: dict) -> list:
     return indices
 
 
-def encode_frames(buffers, delay_cs: int = 10) -> bytes:
+def encode_frames(buffers, delay_cs: int = 10, compress: bool = True) -> bytes:
     """Quantize whole RGB frames onto one shared palette and encode them.
 
     Every screen builds frames the same way - draw, then hand them here - so the
     palette rule (one palette for the whole upload, colours added as they are
     seen) is stated once. Keeping the palette shared is also what keeps patched
     frames small.
+
+    ``compress`` is the real LZW stream: the same frames cost a fraction of the
+    bytes, because a changed rectangle that is mostly empty compresses away. The
+    literal-only stream is kept behind the flag because it is what the tip was
+    first measured against.
     """
     palette: list = []
     index_of: dict = {}
     indices = [_quantize_into(pixels, palette, index_of) for pixels in buffers]
     return gif_encoder.encode(MATRIX_WIDTH, MATRIX_HEIGHT, palette, indices,
-                                delay_cs=max(1, int(delay_cs)))
+                                delay_cs=max(1, int(delay_cs)), compress=compress)
 
 
 def render_stats_gif(

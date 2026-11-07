@@ -36,6 +36,7 @@ import statistics
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +61,7 @@ PANEL_SERVICE = "jsaux-pixel-panel"
 # one reads this and puts the panel back before measuring anything.
 MARKER = Path("/tmp/jsaux-pixel-probe.marker")
 SAMPLES = 5
-TEST_ORDER = ["chunks", "dedupe", "ceiling", "frames", "framerate", "cost",
+TEST_ORDER = ["chunks", "dedupe", "ceiling", "frames", "framerate", "codec", "cost",
               "rotation", "latency", "sleep", "canvas", "loop", "brightness",
               "animation"]
 W, H = screen.MATRIX_WIDTH, screen.MATRIX_HEIGHT
@@ -93,11 +94,12 @@ def noise_frame(seed: int) -> list:
     return out
 
 
-def encode(buffers, delay_cs: int = 10) -> bytes:
-    return gif_encoder.encode(W, H, PALETTE, buffers, delay_cs=max(1, delay_cs))
+def encode(buffers, delay_cs: int = 10, compress: bool = False) -> bytes:
+    return gif_encoder.encode(W, H, PALETTE, buffers, delay_cs=max(1, delay_cs),
+                               compress=compress)
 
 
-def walk_gif(frames: int, delay_cs: int, run: int = 4) -> bytes:
+def walk_gif(frames: int, delay_cs: int, run: int = 4, compress: bool = False) -> bytes:
     """A bright run walking a dim ring: motion, and hardly anything else moves.
 
     The run has to be clearly brighter than the ring it walks, or the camera
@@ -113,7 +115,7 @@ def walk_gif(frames: int, delay_cs: int, run: int = 4) -> bytes:
             cx, cy = ring[(frame + offset) % len(ring)]
             indices[cy * W + cx] = 1
         buffers.append(indices)
-    return encode(buffers, delay_cs)
+    return encode(buffers, delay_cs, compress=compress)
 
 
 def noise_gif(frames: int, seed: int = 0) -> bytes:
@@ -436,6 +438,51 @@ class Probe:
         if not self.args.no_camera:
             self.log("  ratio 1 = it really played them; below 1 = the delay was floored")
 
+    def test_codec(self) -> None:
+        """Does the tip read a compressed LZW stream, and play it at the same rate?
+
+        One ring walk, encoded twice: literal codes, then real LZW. The frames are
+        identical, so if the second is accepted and the watched turn matches, what
+        an animation costs follows what changes rather than how large the area
+        that changes is - which is the difference between a two second loop and a
+        five second one.
+        """
+        rows = []
+        for label, kwargs in (("literal", {}), ("compressed", {"compress": True})):
+            blob = walk_gif(64, 4, **kwargs)
+            row = {"stream": label, "bytes": len(blob),
+                   "crc32": zlib.crc32(blob) & 0xFFFFFFFF}
+            # The signal period is one trip of the mark round the ring, not the
+            # length of the loop: with 16 ring cells and a 4 cs frame the mark
+            # repeats every 0.64 s however many frames were uploaded.
+            turn = screen.RING_CELLS * 4 / 100.0
+            row["expected_mark_period_s"] = round(turn, 3)
+            seconds = self.timed_upload(blob)
+            row["ok"] = seconds is not None
+            row["seconds"] = round(seconds, 2) if seconds is not None else None
+            if row["ok"]:
+                row.update(self.watch(5.0, turn_s=turn))
+            rows.append(row)
+            # A period that is a whole number of mark trips is the 30 fps camera
+            # sampling the same rate, not slower playback.
+            period = row.get("period_s")
+            if period:
+                multiple = period / turn
+                row["mark_trips_per_period"] = round(multiple, 2)
+                row["rate_matches"] = abs(multiple - round(multiple)) < 0.15
+            self.log(f"  {label:10s} {len(blob):6d} bytes crc={row['crc32']:#010x} -> "
+                     f"{'ok' if row['ok'] else 'rejected'}, mark period "
+                     f"{row.get('period_s', '-')}s asked "
+                     f"{row.get('expected_mark_period_s', '-')}s "
+                     f"{'' if row.get('rate_matches') is None else ('same rate' if row['rate_matches'] else 'DIFFERENT RATE')}")
+            self.recover_if_needed(not row["ok"])
+        self.results["codec"] = {"needs_eyes": True, "rows": rows,
+                                 "note": "same frames both ways; a matching turn "
+                                         "means the tip decoded the compressed "
+                                         "stream correctly. The crc is recorded "
+                                         "because the tip ignores a GIF begin it "
+                                         "has already seen."}
+
     def test_cost(self) -> None:
         """Bytes per frame against the area that moves - no hardware needed."""
         rows = []
@@ -447,7 +494,10 @@ class Probe:
             ("every pixel", None),
         ):
             if painter is None:
-                whole, first = noise_gif(8), noise_gif(1)
+                frames = [noise_frame(index) for index in range(8)]
+                whole, first = encode(frames, 6), encode(frames[:1], 6)
+                packed, first_packed = encode(frames, 6, compress=True), \
+                    encode(frames[:1], 6, compress=True)
             else:
                 buffers = []
                 for frame in range(8):
@@ -455,11 +505,20 @@ class Probe:
                     painter(indices, frame)
                     buffers.append(indices)
                 whole, first = encode(buffers, 6), encode(buffers[:1], 6)
+                packed = encode(buffers, 6, compress=True)
+                first_packed = encode(buffers[:1], 6, compress=True)
             per_frame = (len(whole) - len(first)) / 7.0
+            packed_frame = (len(packed) - len(first_packed)) / 7.0
             rows.append({"motion": label, "bytes_per_frame": round(per_frame, 1),
-                         "first_frame": len(first), "eight_frames": len(whole)})
-            self.log(f"  {label:20s} {per_frame:8.1f} bytes a frame")
-        self.results["cost"] = {"rows": rows}
+                         "first_frame": len(first), "eight_frames": len(whole),
+                         "compressed_bytes_per_frame": round(packed_frame, 1),
+                         "compressed_eight_frames": len(packed)})
+            self.log(f"  {label:20s} {per_frame:8.1f} bytes a frame literal, "
+                     f"{packed_frame:8.1f} compressed")
+        self.results["cost"] = {"rows": rows,
+                                "note": "literal is what everything was measured "
+                                        "against first; compressed is what "
+                                        "encode_frames sends by default now"}
 
     def _pattern_run(self, indices, frame) -> None:
         ring = screen.ring_cells(screen.SPINNER_X, screen.SPINNER_Y, screen.SPINNER_SIZE)
@@ -669,6 +728,7 @@ class Probe:
         tests = {"chunks": self.test_chunks, "dedupe": self.test_dedupe,
                   "ceiling": self.test_ceiling,
                   "frames": self.test_frames, "framerate": self.test_framerate,
+                  "codec": self.test_codec,
                   "cost": self.test_cost, "rotation": self.test_rotation,
                   "latency": self.test_latency, "sleep": self.test_sleep,
                   "canvas": self.test_canvas, "loop": self.test_loop,

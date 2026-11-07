@@ -42,7 +42,7 @@ just wraps it as one source.
 | Screens **pre-empt** (priority) and otherwise **rotate** | notifications want to interrupt; calendar and animations want a turn. Rotation floor is 1.1 s measured, so dwell times are seconds, not frames |
 | A notification is a **static card with one scrolling line** | a smaller GIF canvas does not patch - it clears the screen - so we pay one full frame either way; the scroll costs ~97 bytes a frame, so a long message fits |
 | Calendar reads **local `.ics` files**, no network client | keeps the panel host free of credentials, matches the bridge split, and a 60 s poll is enough for a countdown |
-| Animations are **pre-converted and budget-checked** | a whole 64x54 frame costs 2,045 bytes, so "any GIF" is not a runtime property. `gif_prep` decides at convert time and reports what it did |
+| Animations are **generated here, then budget-checked** | one whole-panel frame costs 2,045 bytes literal, 1,603 compressed, so "any GIF" is not a runtime property - the files in `media/gifs` only fit as 5-39 frame flickers. `tools/panel_anim.py` redraws the ones that are geometry; `tools/gif_prep.py` lints anything else and says what it did |
 | Brightness and firmware animations are **not used** | both are unanswered or rejected on this tip (see the limits table) |
 | The runner is one program, so it runs the same way here and on the Deck | when the panel moves, the Deck runs `panel_screen.py` (or the plugin) pointed at the bridge; nothing about the content changes |
 
@@ -100,6 +100,106 @@ fastest way to find out whether a layout problem is the renderer or the link.
 5. **Layout wrong**: `--png` a frame and look at it; the camera path
    (`tools/panel_cam.py grab`) is there to compare what was drawn with what the
    panel shows.
+
+## Replicating the GIFs
+
+`media/gifs` is the vendor's own animation pack (23 files, 63 MB) and it is
+**not in the repo** - `.gitignore` keeps it out, so the paths below are local
+paths. It is only the measuring stick: `gif_prep --survey` fits every source
+into 64x54, encodes it with the same encoder the panel plays, and
+binary-searches how many frames the 24 KiB budget keeps.
+
+```bash
+.venv/bin/python tools/gif_prep.py --survey media/gifs
+```
+
+What that says for this set: nine files keep all their frames, and their loops
+are 0.72 s to 1.60 s - `lady.gif` 18 frames/7,941 B/0.72 s, `gears.gif`
+25/15,341/1.00 s, `hexigon-warp.gif` 23/13,557/0.92 s. A one-second loop of a
+figure flashing is a flicker, not an animation. The rest get cut to fit:
+`dot-wave.gif` keeps 26 frames of 45, `spinning-nested-wheels.gif` 35 of 130,
+`nested-circle-bounce.gif` 35 of 269.
+
+The `moved` column is the part that decides it. `skeletons.gif` changes 3,411 of
+the panel's 3,456 cells every frame, `cyclone-2.gif` 2,053, `hexigon-warp.gif`
+1,973 - a near-whole-panel repaint, which is the one thing the link cannot pay
+for many frames of. Two sources do fit honestly as themselves (`dropplet-2` keeps
+122 frames and 4.88 s, `spherewave` 107 frames, 4.28 s and 36 cells a frame) and
+their redraws are near-equivalents of them.
+
+So the set is **redrawn**: `backend/panel_anim.py` holds sixteen procedural
+replicas, one per source that is really geometry. The rules that make a redraw
+work at panel scale, each learned from a version that failed:
+
+* **One figure, not several.** Six copies of a thing at panel scale is a field of
+  noise; one gear, one pyramid, one ball.
+* **A few cells of movement a step, never a whole side at once.** A cube's three
+  spokes rotating reads as a turn; its three faces lighting in sequence reads as
+  a blink. Same for a pyramid's faces.
+* **Phase over exactly one turn of the geometry.** Then frame N joins onto frame
+  0 and the loop has no seam; the test in `tests/test_panel_anim.py` measures
+  that (the step from the last frame back to the first must not be bigger than a
+  typical step).
+* **Something has to change every frame.** A wave whose threshold crosses nothing
+  for ten steps is ten frames of frozen panel; the test counts dead frames and a
+  few replicas were rebuilt because of it (`sphere-wave`, `spokes`, `pivot`,
+  `sheet-fan`, `hex-warp`).
+* **Dots, not lines.** At 64x54 a 2px line is a smear; a dotted curve - a spirograph,
+  a ball of dots - is legible and costs 8 cells a frame instead of 300.
+* **4 cs frames.** 3 cs is the measured playback floor, and 4 cs times exactly.
+
+What the set costs, and what it looks like on the panel (all of it measured by
+`tools/panel_anim.py --list` and then confirmed by eye, see below):
+
+| replica | of | frames | bytes | loop | reads as |
+|---|---|---|---|---|---|
+| spirograph | spinning-nested-wheels | 120 | 6,628 | 4.80s | a dotted rose tracing itself |
+| sphere-wave | spherewave | 64 | 7,666 | 2.56s | a ball of dots with rings running out |
+| pivot | pivot-machine | 64 | 7,206 | 2.56s | bars hinged through the centre, turning |
+| cube-field | shifting-cubes | 64 | 8,416 | 2.56s | hexagons whose spokes turn: cubes flipping |
+| pyramid-spin | piramid-spin | 64 | 9,247 | 2.56s | a wireframe pyramid turning over its base |
+| hex-warp | hexigon-warp | 48 | 9,506 | 1.92s | nested hexagons warping |
+| spokes | static-hairs | 72 | 10,511 | 2.88s | dashed rays marching out of a centre |
+| blob-wave | wavy-blob | 112 | 11,150 | 4.48s | a blob outline that morphs |
+| pinwheel | star | 88 | 15,148 | 3.52s | a five-point star turning |
+| chevron | zig-zag--wave | 56 | 15,339 | 2.24s | a wall of zigzag marching |
+| dropplet | dropplet | 88 | 18,583 | 3.52s | a cone of layers with a ripple through them |
+| gears | gears | 88 | 18,946 | 3.52s | two toothed wheels, meshing |
+| nested-bounce | nested-circle-bounce | 56 | 19,749 | 2.24s | rings growing out of each other |
+| cyclone | cyclone-bubble | 80 | 22,498 | 3.20s | nested rings breathing |
+| dot-wave | dot-wave | 52 | 23,044 | 2.08s | diagonal bands of dots |
+| sheet-fan | spinning-sheets | 56 | 18,059 | 2.24s | rules fanning from an apex |
+
+`dot-wave` and `chevron` are the two to drop first if the rotation ever feels
+loud: both move continuously and both are faithful to their source, but at
+panel scale a field of dots a third of a second wide reads as weather, not as a
+figure. Everything else reads as the thing it is named after.
+
+Not replicated, deliberately: the figurative sources (`lady`, `lady-2`, the
+skeletons, the character loops). At 64x54 a face is a blob of changing cells,
+which is the one cost case the link cannot pay - a repaint of most of the panel
+is ~1,600 bytes a frame compressed, so six frames of it is a second and a half of
+loop for 10 KB. There is no version of "a person" that fits; the redraws are
+geometry because geometry is what fits.
+
+### How an animation gets accepted
+
+`tools/panel_review.py` is the review. It stops `jsaux-pixel-panel.service` so
+nothing else is writing to the port, uploads one GIF, films 3 s of the panel, and
+writes a filmstrip of twelve frames 0.2 s apart, cropped to the matrix and
+labelled with the time. Then the next one. The service is back up on the way out.
+
+```bash
+sg dialout -c '.venv/bin/python tools/panel_review.py'          # all of them
+sg dialout -c '.venv/bin/python tools/panel_review.py gears'    # one of them
+```
+
+Stop-the-service is not ceremony: with the rotation running, the panel shows
+whatever the rotation chose, so watching the spinner once filmed the calendar
+instead. And the filmstrip, not the motion estimator, is what gets believed -
+the panel's glass reflects the room, and a 30 fps camera locks onto harmonics, so
+a "period" reading can be the person walking past. Every one of the sixteen in
+the table above has been through this pass and reads as intended.
 
 ## Deliberately not done yet
 

@@ -38,24 +38,74 @@ One caveat about the loop measurements: over a short film the period can read as
 
 ## What a frame costs, by how much of it moves
 
-`gif_encoder` patches frames after the first, so this is the real cost curve:
+`gif_encoder` patches frames after the first, so this is the real cost curve.
+`tools/panel_probe.py cost` prints both columns without touching the hardware
+(it encodes eight frames and divides by seven, so the header is not in the way):
 
-| motion | bytes a frame |
-|---|---|
-| 4-cell run on the activity ring | 26 |
-| one 64-pixel ticker row | 97 |
-| 16x16 block | 223 |
-| 42x42 block | 1,185 |
-| every pixel (noise) | 2,045 |
+| motion | literal | compressed |
+|---|---|---|
+| 4-cell run on the activity ring | 26 | 25 |
+| one 64-pixel ticker row | 97 | 35 |
+| 16x16 block | 223 | 60 |
+| 42x42 block | 1,185 | 128 |
+| every pixel (noise) | 2,045 | 1,603 |
+
+Two things fall out. A moving picture costs for its **bounding box**, not its
+pixel count - the 42x42 block changes 662 cells and pays for 1,764. And
+compression buys almost nothing when the picture is incoherent (2,045 to 1,603)
+and almost everything when it is structured (1,185 to 128). Every animation here
+is structured, which is why the whole set got cheaper.
+
+### The patch charges for the box, until the stream is compressed
+
+A patched frame is a rectangle around what changed, and literal LZW charges for
+every cell **inside that rectangle**. A diagonal band crossing the panel changes
+256 cells but its box is the whole screen, so it costs a whole frame - 2,045 bytes
+- instead of a few hundred. That is why an animation used to be capped at a couple
+of dozen frames.
+
+`gif_encoder.encode(..., compress=True)` writes real LZW dictionary codes
+instead. Same frames, same decode. Whole files, both ways:
+
+| what was encoded | literal | compressed | saved |
+|---|---|---|---|
+| one still frame, mostly black (bands and a block) | 2,102 | **311** | 85% |
+| ring walk, 64 frames (`probe.py walk_gif`) | 3,771 | **1,741** | 54% |
+| 150 frames of a band sweeping the panel | 295,995 | **35,983** | 88% |
+| `cube-field` replica, 64 frames | 31,701 | **8,416** | 73% |
+
+The tip accepts it, and `tools/panel_probe.py codec` is the test that says so:
+
+```bash
+sg dialout -c '.venv/bin/python tools/panel_probe.py codec'
+```
+
+It uploads the same ring walk both ways, and reports both as accepted at the same
+playback rate. Because a compressed stream is where a wrong LZW convention would
+show up as garbage pixels, the static check in `docs` form is worth repeating by
+hand: `gif_encoder.encode` one asymmetric frame both ways, upload, and read the
+LEDs back through the camera - every cell came back the same (64,952 vs 64,954 on
+white, 51,595 vs 51,527 on amber, means of 0-65535). PIL also round-trips the
+compressed stream with zero differing cells, which is the cheaper way to catch a
+convention error.
+
+`ai_agent_screen.encode_frames` now compresses by default; the literal stream is
+still available (`compress=False`) because the cost table above is stated in its
+terms.
 
 So the budget is set by **how much of the picture changes**, not by how many
-frames there are. Under the 32 KiB ceiling that means:
+frames there are. With the compressed stream, these are measured loops that fit
+inside 24 KiB (the numbers `tools/panel_anim.py --list` prints):
 
-| a single upload can carry | at 30 fps |
-|---|---|
-| ~110 frames of a moving sprite | 3.7 s of animation |
-| ~150 frames of a scrolling row | 5 s of ticker |
-| ~15 frames of whole-screen change | 0.5 s, the only "video-ish" case, and it is the one case that does not fit |
+| what moves | bytes a frame | fits in 24 KiB |
+|---|---|---|
+| ~6-40 cells (a tracing pen, dots on a ball) | 55-120 | 110-120 frames, 4-5 s of loop |
+| ~120-250 cells (gears, a wave of rings, rays) | 215-260 | 70-90 frames, 3-3.5 s |
+| ~320-850 cells (a whole lattice of rings, rows of zigzag) | 350-275 | 50-56 frames, ~2.2 s |
+
+The old whole-screen-change row is gone because nothing here changes the whole
+screen: a figure, a photo or a crossfade does, and that is the case that still
+does not fit - see "Replicating the GIFs" in `docs/panel-features.md`.
 
 ## The two rules that fall out of this
 

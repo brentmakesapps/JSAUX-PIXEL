@@ -189,18 +189,23 @@ def upcoming(events: list, now, limit: int = 8) -> list:
 
 
 def countdown(now, then) -> str:
-    """``in 25m``, ``in 2h05``, ``in 3d`` - the one unit that matters."""
+    """``IN 25M``, ``IN 19H``, ``TMR`` - the one unit that matters.
+
+    Six characters or fewer, because the card draws this at scale 2 where the
+    panel fits six: ``in 19h51`` ran off the right-hand edge. Precision past an
+    hour is noise anyway - nobody plans on 51 minutes.
+    """
     delta = then - now
     minutes = int(delta.total_seconds() // 60)
     if minutes < 0:
         return "NOW"
     if minutes < 60:
-        return f"in {minutes}m"
+        return f"IN {minutes}M"
     if delta.days <= 0:
-        return f"in {minutes // 60}h{minutes % 60:02d}"
+        return f"IN {minutes // 60}H"
     if delta.days == 1:
         return "TMR"
-    return f"in {delta.days}d"
+    return f"IN {delta.days}D"
 
 
 def next_event(events: list, now):
@@ -257,8 +262,11 @@ class CalendarSource(Source):
         for line in panel_text.wrap(event.summary, columns, 3):
             panel_text.draw_at(pixels, line, 0, y, screen.WHITE)
             y += 6
-        panel_text.draw_at(pixels, countdown(now, event.start), 0, 27, screen.AMBER,
-                           scale=2)
+        left = countdown(now, event.start)
+        # Scale 2 is six glyphs wide and that is the panel; if a countdown ever
+        # grows past that it drops to scale 1 instead of running off the edge.
+        big = panel_text.text_width(left, 2) <= screen.MATRIX_WIDTH
+        panel_text.draw_at(pixels, left, 0, 27, screen.AMBER, scale=2 if big else 1)
         panel_text.draw_at(pixels, event.start.strftime("%a %d %b"), 0,
                            screen.MATRIX_HEIGHT - 6, screen.DIM)
         # One still frame: the countdown changes a minute at a time, which costs

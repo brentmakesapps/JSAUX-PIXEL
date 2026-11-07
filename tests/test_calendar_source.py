@@ -59,10 +59,21 @@ class ParseTests(unittest.TestCase):
 class CountdownTests(unittest.TestCase):
     def test_units(self) -> None:
         now = datetime(2026, 11, 6, 12, 0)
-        self.assertEqual(cal.countdown(now, now + timedelta(minutes=25)), "in 25m")
-        self.assertEqual(cal.countdown(now, now + timedelta(minutes=125)), "in 2h05")
-        self.assertEqual(cal.countdown(now, now + timedelta(days=3)), "in 3d")
+        self.assertEqual(cal.countdown(now, now + timedelta(minutes=25)), "IN 25M")
+        self.assertEqual(cal.countdown(now, now + timedelta(minutes=125)), "IN 2H")
+        self.assertEqual(cal.countdown(now, now + timedelta(days=3)), "IN 3D")
         self.assertEqual(cal.countdown(now, now - timedelta(minutes=1)), "NOW")
+
+    def test_it_always_fits_the_big_text(self) -> None:
+        """The countdown is drawn at scale 2, where the panel holds six glyphs.
+
+        A longer string used to run off the right-hand edge, which is how
+        "in 19h51" came back as "IN 19H:I" on the hardware.
+        """
+        now = datetime(2026, 11, 6, 12, 0)
+        for minutes in (-5, 0, 1, 9, 59, 60, 61, 539, 540, 1439, 1440, 10080):
+            text = cal.countdown(now, now + timedelta(minutes=minutes))
+            self.assertLessEqual(len(text), 6, "%s is too wide at scale 2" % text)
 
 
 class SourceTests(unittest.TestCase):

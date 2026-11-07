@@ -135,10 +135,10 @@ def main(argv=None) -> int:
     print(json.dumps(calib, indent=2))
     print(f"wrote {CALIB_FILE}")
     if args.show:
-        subprocess.run(["magick", str(frame), "-colorspace", "Gray",
-                        "-threshold", f"{args.threshold}%", str(frame) + ".lit.png"],
+        subprocess.run(["magick", str(lit), "-colorspace", "Gray",
+                        "-threshold", f"{args.threshold}%", str(lit) + ".lit.png"],
                        check=False)
-        print(f"lit mask: {frame}.lit.png")
+        print(f"lit mask: {lit}.lit.png")
     return 0
 
 

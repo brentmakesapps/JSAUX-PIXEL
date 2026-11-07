@@ -11,6 +11,7 @@ that plays has passed through this tool.
     python3 tools/gif_prep.py some.gif              # into the gif directory
     python3 tools/gif_prep.py some.gif --budget 20000 --colors 6
     python3 tools/gif_prep.py --list                # what will play
+    python3 tools/gif_prep.py --survey media/gifs   # what a folder would cost
 """
 
 import argparse
@@ -101,6 +102,33 @@ def prepare(path, out_dir, budget, colors):
             "changed": round(changed_per_frame(frames, keep), 1)}
 
 
+def survey(path, budget, colors):
+    """What this GIF would cost, and how much of it the budget keeps.
+
+    Nothing is written: a survey is how you find out whether a directory of
+    animations is worth converting at all. The answer for a GIF made for a
+    computer screen is usually that only a second of it fits.
+    """
+    frames, delays = load_frames(path, colors)
+    if not frames:
+        return {"source": str(path), "frames_source": 0, "frames_kept": 0,
+                 "bytes": 0, "delay_cs": MIN_DELAY_CS, "loop_s": 0.0, "changed": 0.0}
+    delay = max(MIN_DELAY_CS, min(delays))
+    low, high, kept, data = 1, len(frames), 0, b""
+    while low <= high:
+        middle = (low + high) // 2
+        blob = screen.encode_frames(frames[:middle], delay_cs=delay)
+        if len(blob) <= budget:
+            kept, data, low = middle, blob, middle + 1
+        else:
+            high = middle - 1
+    return {"source": str(path), "frames_source": len(frames), "frames_kept": kept,
+            "bytes": len(data), "budget": budget, "delay_cs": delay,
+            "loop_s": round(kept * delay / 100.0, 2),
+            "changed": round(changed_per_frame(frames, max(2, min(kept, 8))), 1),
+            "pixels": WIDTH * HEIGHT}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="gif_prep",
                                      description="Fit a GIF to what the panel can play.")
@@ -109,8 +137,28 @@ def main(argv=None):
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--colors", type=int, default=8)
     parser.add_argument("--list", dest="listing", action="store_true")
+    parser.add_argument("--survey", default="",
+                        help="report what a directory of GIFs would cost; write nothing")
     args = parser.parse_args(argv)
     out_dir = gif_screen.gif_dir(args.out)
+    if args.survey:
+        directory = Path(args.survey).expanduser()
+        files = sorted(directory.glob("*.gif")) if directory.is_dir() else []
+        if not files:
+            print("no GIFs in " + str(directory), file=sys.stderr)
+            return 2
+        print("%-34s %6s %5s %8s %6s %7s  %s"
+              % ("source", "frames", "keep", "bytes", "loop s", "moved", "verdict"))
+        for item in files:
+            report = survey(item, args.budget, args.colors)
+            if report["frames_kept"] >= report["frames_source"]:
+                verdict = "fits as is"
+            else:
+                verdict = "flicker" if report["loop_s"] < 1.5 else "short"
+            print("%-34s %6d %5d %8d %6.2f %7.1f  %s"
+                  % (item.name, report["frames_source"], report["frames_kept"],
+                     report["bytes"], report["loop_s"], report["changed"], verdict))
+        return 0
     if args.listing:
         files = sorted(out_dir.glob("*.gif")) if out_dir.is_dir() else []
         print("%d prepared animations in %s" % (len(files), out_dir))

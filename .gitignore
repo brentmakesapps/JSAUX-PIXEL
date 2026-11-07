@@ -36,3 +36,13 @@ source_snapshot/
 # Scratch: a pasted transcript from another tool, and chat images
 dot-display-llm-provider-stats-session.txt
 .openclaw-cli-images/
+
+# Media kept out of the repo on purpose. media/gifs is the vendor's own animation
+# pack (63 MB, and their files to keep), used only as the thing the redraws in
+# backend/panel_anim.py are measured against; media/inbound is staged attachments.
+/media/gifs/
+/media/inbound/
+
+# Local agent/tool state for this checkout
+/.opencode/
+/.cortexkit/
